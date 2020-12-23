@@ -14,7 +14,9 @@ by
 
 # EXAMPLES
 
-To run the examples, you will need an arm QEMU. An example can be seen below:
+To run the examples, you will need an arm QEMU.  An example can be seen below:
+
+In order to run these examples, your cargo runner should be set to something like: `qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -semihosting -serial mon:stdio -kernel `
 
 _The classic example_
 
