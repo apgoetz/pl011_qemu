@@ -1,0 +1,17 @@
+[package]
+authors = ["Andy Goetz <andy@andygoetz.org>"]
+edition = "2018"
+readme = "README.md"
+name = "pl011_qemu"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = "0.6.0"
+volatile-register = "0.2.0"
+embedded-hal = "0.2.4"
+nb = "1.0.0"
+
+[dev-dependencies]
+cortex-m-rt = "0.6.10"
+panic-halt = "0.2.0"
+cortex-m-semihosting = "0.3.3"
