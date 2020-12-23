@@ -4,6 +4,10 @@ edition = "2018"
 readme = "README.md"
 name = "pl011_qemu"
 version = "0.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/apgoetz/pl011_qemu"
+homepage = "https://github.com/apgoetz/pl011_qemu"
+description = "Simple Driver for PL011 UARTs in QEMU"
 
 [dependencies]
 cortex-m = "0.6.0"
