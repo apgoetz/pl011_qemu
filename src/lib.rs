@@ -9,11 +9,12 @@
 //! allows those UARTS to be accessed in order to support more
 //! complicated use cases than can be provided by
 //! [cortex_m_semihosting](https://crates.io/crates/cortex-m-semihosting).
+
+#![deny(missing_docs)]
 #![no_std]
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic;
 use cortex_m::interrupt;
 use embedded_hal::serial;
 use nb;
@@ -91,83 +92,189 @@ pub struct Error;
 /// // build a driver for UART1
 /// let mut uart = pl011_qemu::PL011::new(pl011_qemu::UART1::take().unwrap());
 /// ```
-pub struct PL011<T> {
+pub struct PL011<UART> {
     /// owned copy of the underlying uart registers.
     ///
-    /// Since they are
-    /// moved into this struct, no one else can access them after the
-    /// driver is initialized
-    pub regs: T,
+    ///Since they are moved into this struct, no one else can access them after the driver is initialized
+    pub regs: UART,
+    rx: Rx<UART>,
+    tx: Tx<UART>,
+}
+/// Represents read half of UART.
+pub struct Rx<UART> {
+    _uart: PhantomData<UART>
+}
+/// Represents write half of UART
+pub struct Tx<UART> {
+    _uart: PhantomData<UART>
 }
 
-impl<T> PL011<T>
+
+
+impl<T> Rx<T>
 where
-    T: Deref<Target = PL011_Regs>,
+    T: detail::ConstRegBlockPtr<PL011_Regs>,
+{
+    /// reads a single byte out the uart
+    ///
+    /// spins until a byte is available in the fifo
+    pub fn read_byte(&self) -> u8 {
+        // loop while RXFE is set
+        loop {
+            // atomic read of register is side effect free
+            let uartfr = unsafe { (*T::ptr()).uartfr.read() };
+            if uartfr & 0x10 == 0 {
+                break
+            }
+        }
+        // read the data register. Atomic read is side effect free
+        let data = unsafe {(*T::ptr()).uartdr.read() & 0xff};
+        data as u8
+    }    
+}
+
+impl<T> Tx<T>
+where
+    T: detail::ConstRegBlockPtr<PL011_Regs>,
+{
+    /// writes a single byte out the uart
+    ///
+    /// spins until space is available in the fifo
+    pub fn write_byte(&self, data: u8) {
+        loop {
+            // atomic read of register is side effect free
+            let uartfr = unsafe { (*T::ptr()).uartfr.read() };
+            // if TXFF is not set
+            if uartfr & 0x20 == 0 {
+                break
+            }
+        }
+        unsafe {(*T::ptr()).uartdr.write(data as u32)};
+    }
+}
+
+
+impl<T> serial::Read<u8> for Rx<T>
+    where
+    T: detail::ConstRegBlockPtr<PL011_Regs>,
+{
+    type Error = Error;
+    fn read(&mut self) -> nb::Result<u8, Self::Error> {
+        // atomic read of register is side effect free
+        let uartfr = unsafe { (*T::ptr()).uartfr.read() };
+        // if RXFE is set (rx fifo is empty)
+        if uartfr & 0x10 > 0 {
+            Err(nb::Error::WouldBlock)
+        } else {
+            Ok(unsafe {(*T::ptr()).uartdr.read() & 0xff} as u8)
+        }
+    }
+}
+
+impl<T> serial::Write<u8> for Tx<T>
+    where
+    T: detail::ConstRegBlockPtr<PL011_Regs>,
+{
+    type Error = Error;
+    fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
+        self.flush()?;
+        unsafe {(*T::ptr()).uartdr.write(word as u32)};
+        Ok(())
+    }
+    fn flush(&mut self) -> nb::Result<(), Self::Error> {
+        // atomic read of register is side effect free
+        let uartfr = unsafe { (*T::ptr()).uartfr.read() };
+        // if TXFF is set (transmit fifo full)
+        if uartfr & 0x20 > 0 {
+            Err(nb::Error::WouldBlock)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<T> fmt::Write for Tx<T>
+    where
+    Tx<T>: serial::Write<u8>,
+{
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        use embedded_hal::serial::Write;
+        for b in s.as_bytes().iter() {
+            if nb::block!(self.write(*b)).is_err() {
+                return Err(fmt::Error);
+            }
+        }
+        Ok(())
+    }
+}
+
+
+impl<T> PL011<T>
+    where
+    T: detail::ConstRegBlockPtr<PL011_Regs>,
 {
     /// Initialize a UART driver. Needs a UART struct to be passed in
     pub fn new(uart: T) -> Self {
-        let pl011 = PL011 { regs: uart };
+        let pl011 = PL011 { regs: uart, tx: Tx{_uart:PhantomData}, rx: Rx{_uart:PhantomData} };
         pl011
+    }
+    /// splits a single PL011 uart object into separate Rx and Tx streams.
+    ///
+    /// Useful when you want to separate the two different halves of
+    /// the UART and use them in different parts of the application
+    ///
+    /// Note that the Rx and Tx structs do not contain a reference to
+    /// the underlying UART, this is because once you split the UART
+    /// in half, it is no longer possible to interact with the uart
+    /// hardware directly, since the other half (rx or tx) might be
+    /// using it at the same time.
+    pub fn split(self) -> (Tx<T>,Rx<T>) {
+        (self.tx, self.rx)
     }
     /// writes a single byte out the uart
     ///
     /// spins until space is available in the fifo
     pub fn write_byte(&self, data: u8) {
-        // while TXFF is set
-        while self.regs.uartfr.read() & 0x20 > 0 {
-            atomic::spin_loop_hint();
-        }
-        unsafe {
-            self.regs.uartdr.write(data as u32);
-        }
+        self.tx.write_byte(data);
     }
     /// reads a single byte out the uart
     ///
     /// spins until a byte is available in the fifo
     pub fn read_byte(&self) -> u8 {
-        // while RXFE is set
-        while self.regs.uartfr.read() & 0x10 > 0 {
-            atomic::spin_loop_hint();
-        }
-        (self.regs.uartdr.read() & 0xff) as u8
+        self.rx.read_byte()
     }
 }
+
 impl<T> fmt::Write for PL011<T>
-where
-    T: Deref<Target = PL011_Regs>,
+    where
+    Tx<T>: fmt::Write,
 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for b in s.as_bytes().iter() {
-            self.write_byte(*b);
-        }
-        Ok(())
+        self.tx.write_str(s)
     }
 }
 
-
-
 impl<T> serial::Read<u8> for PL011<T>
-where
-    T: Deref<Target = PL011_Regs>,
+    where
+    Rx<T>: serial::Read<u8, Error=Error>,
 {
     type Error = Error;
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
-        Ok(self.read_byte())
+        self.rx.read()
     }
 }
 
 
 impl<T> serial::Write<u8> for PL011<T>
-where
-    T: Deref<Target = PL011_Regs>,
+    where
+    Tx<T>: serial::Write<u8, Error=Error>,
 {
     type Error = Error;
     fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
-        self.write_byte(word);
-        Ok(())
+        self.tx.write(word)
     }
     fn flush(&mut self) -> nb::Result<(), Self::Error> {
-        Ok(())
+        self.tx.flush()
     }
 }
 
@@ -181,14 +288,21 @@ macro_rules! create_uart {
             pub struct $uart {
                 _marker: PhantomData<*const ()>,
             }
-            unsafe impl Send for $uart {}
-            impl Deref for $uart {
-                type Target = PL011_Regs;
-                #[inline(always)]
-                fn deref(&self) -> &Self::Target {
-                    unsafe {&*($addr as *const _)}
-                }
+        impl detail::ConstRegBlockPtr<PL011_Regs> for $uart {
+            /// returns a pointer to the register block
+            fn ptr() -> *const PL011_Regs {
+                $addr as *const _
             }
+        }
+        unsafe impl Send for $uart {}
+        impl Deref for $uart {
+            type Target = PL011_Regs;
+            #[inline(always)]
+            fn deref(&self) -> &Self::Target {
+                use crate::detail::ConstRegBlockPtr;
+                unsafe {&* $uart::ptr()}
+            }
+        }
         static mut $global : bool = false;
         impl $uart {
             /// takes the UART HW
@@ -229,3 +343,16 @@ create_uart!(
     /// Hardware Singleton for UART4
     struct UART4,
     UART4_TAKEN, 0x4000_f000);
+
+mod detail {
+    /// Trait to indicate that the following type always points to a fixed hardware resource
+    ///
+    /// This trait is used since there is a uniqe type for each UART
+    /// hardware component. If you have access to that type, you can
+    /// access the registers of its underlying hardware through the
+    /// type
+    pub trait ConstRegBlockPtr<R> {
+        /// returns a pointer to the fixed address of the underlying hardware resource  
+        fn ptr() -> *const R where Self: Sized;
+    }
+}
