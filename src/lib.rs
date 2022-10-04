@@ -15,7 +15,7 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use cortex_m::interrupt;
+pub use cortex_m::interrupt;
 use embedded_hal::serial;
 use nb;
 use volatile_register::{RO, RW, WO};
@@ -278,6 +278,8 @@ impl<T> serial::Write<u8> for PL011<T>
     }
 }
 
+/// Create a new UART
+#[macro_export]
 macro_rules! create_uart {
     (
         $(#[$attr:meta])* struct $uart:ident,
@@ -286,20 +288,20 @@ macro_rules! create_uart {
     ) => {
         $(#[$attr])*
             pub struct $uart {
-                _marker: PhantomData<*const ()>,
+                _marker: core::marker::PhantomData<*const ()>,
             }
-        impl detail::ConstRegBlockPtr<PL011_Regs> for $uart {
+        impl $crate::detail::ConstRegBlockPtr<$crate::PL011_Regs> for $uart {
             /// returns a pointer to the register block
-            fn ptr() -> *const PL011_Regs {
+            fn ptr() -> *const $crate::PL011_Regs {
                 $addr as *const _
             }
         }
         unsafe impl Send for $uart {}
-        impl Deref for $uart {
-            type Target = PL011_Regs;
+        impl core::ops::Deref for $uart {
+            type Target = $crate::PL011_Regs;
             #[inline(always)]
             fn deref(&self) -> &Self::Target {
-                use crate::detail::ConstRegBlockPtr;
+                use $crate::detail::ConstRegBlockPtr;
                 unsafe {&* $uart::ptr()}
             }
         }
@@ -309,7 +311,7 @@ macro_rules! create_uart {
             ///
             /// Can only be taken once. If taken again returns None
             pub fn take() -> Option<Self> {
-                    interrupt::free(|_| {
+                    $crate::interrupt::free(|_| {
                         if unsafe {$global} {
                             None
                         } else {
@@ -322,7 +324,7 @@ macro_rules! create_uart {
             /// Should not be needed if properly passing around the uart
             pub unsafe fn steal() -> Self {
                 $global = true;
-                $uart {_marker : PhantomData}
+                $uart {_marker: core::marker::PhantomData }
             }
         }
     }
@@ -344,7 +346,8 @@ create_uart!(
     struct UART4,
     UART4_TAKEN, 0x4000_f000);
 
-mod detail {
+/// Implementation details for register block.
+pub mod detail {
     /// Trait to indicate that the following type always points to a fixed hardware resource
     ///
     /// This trait is used since there is a uniqe type for each UART
